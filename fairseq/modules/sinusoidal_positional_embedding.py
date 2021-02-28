@@ -5,11 +5,12 @@
 
 import math
 from typing import Any, Optional
-
+import logging
 import torch
 import torch.onnx.operators
 from fairseq import utils
 from torch import Tensor, nn
+
 
 
 class SinusoidalPositionalEmbedding(nn.Module):
@@ -63,7 +64,10 @@ class SinusoidalPositionalEmbedding(nn.Module):
         incremental_state: Optional[Any] = None,
         timestep: Optional[Tensor] = None,
         positions: Optional[Any] = None,
+            dict=None
     ):
+      #  logging.info("INPUT:")
+       # logging.info(input)
         """Input is expected to be of size [bsz x seqlen]."""
         bspair = torch.onnx.operators.shape_as_tensor(input)
         bsz, seq_len = bspair[0], bspair[1]
@@ -82,12 +86,15 @@ class SinusoidalPositionalEmbedding(nn.Module):
                 return (
                     self.weights.index_select(index=self.padding_idx + pos, dim=0)
                     .unsqueeze(1)
-                    .repeat(bsz, 1, 1)
+                    .repeat(bsz, 1, 1),
+                    self.weights.index_select(index=self.padding_idx + pos, dim=0)
+                        .unsqueeze(1)
+                        .repeat(bsz, 1, 1)
                 )
-            return self.weights[self.padding_idx + pos, :].expand(bsz, 1, -1)
+            return self.weights[self.padding_idx + pos, :].expand(bsz, 1, -1),self.weights[self.padding_idx + pos, :].expand(bsz, 1, -1)
 
-        positions = utils.make_positions(
-            input, self.padding_idx, onnx_trace=self.onnx_trace
+        positions,positions_end = utils.make_positions(
+            input, self.padding_idx, onnx_trace=self.onnx_trace,dictionary=dict
         )
         if self.onnx_trace:
             flat_embeddings = self.weights.detach().index_select(0, positions.view(-1))
@@ -101,5 +108,8 @@ class SinusoidalPositionalEmbedding(nn.Module):
         return (
             self.weights.index_select(0, positions.view(-1))
             .view(bsz, seq_len, -1)
-            .detach()
+            .detach(),
+            self.weights.index_select(0, positions_end.view(-1))
+                .view(bsz, seq_len, -1)
+                .detach()
         )

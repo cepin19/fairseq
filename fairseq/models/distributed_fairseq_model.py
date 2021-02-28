@@ -62,7 +62,7 @@ def DistributedFairseqModel(args, model, process_group, device):
             broadcast_buffers=args.broadcast_buffers,
             bucket_cap_mb=args.bucket_cap_mb,
             process_group=process_group,
-            find_unused_parameters=args.find_unused_parameters,
+            find_unused_parameters=True,#args.find_unused_parameters,
         )
         # forward missing getattr and state_dict/load_state_dict to orig model
         wrapped_model = ModuleProxyWrapper(wrapped_model)

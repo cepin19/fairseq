@@ -5,6 +5,7 @@
 
 import math
 from typing import Any, Dict, List, Optional, Tuple
+import logging
 
 import torch
 import torch.nn as nn
@@ -313,6 +314,7 @@ class TransformerModel(FairseqEncoderDecoderModel):
         return self.get_normalized_probs_scriptable(net_output, log_probs, sample)
 
 
+
 class TransformerEncoder(FairseqEncoder):
     """
     Transformer encoder consisting of *args.encoder_layers* layers. Each layer
@@ -326,6 +328,7 @@ class TransformerEncoder(FairseqEncoder):
 
     def __init__(self, args, dictionary, embed_tokens):
         super().__init__(dictionary)
+        #logging.info(dictionary.symbols)
         self.register_buffer("version", torch.Tensor([3]))
 
         self.dropout_module = FairseqDropout(
@@ -336,7 +339,7 @@ class TransformerEncoder(FairseqEncoder):
         embed_dim = embed_tokens.embedding_dim
         self.padding_idx = embed_tokens.padding_idx
         self.max_source_positions = args.max_source_positions
-
+        self.lattice=getattr(args, "lattice", False)
         self.embed_tokens = embed_tokens
 
         self.embed_scale = 1.0 if args.no_scale_embedding else math.sqrt(embed_dim)
@@ -395,14 +398,33 @@ class TransformerEncoder(FairseqEncoder):
             token_embedding = self.embed_tokens(src_tokens)
         x = embed = self.embed_scale * token_embedding
         if self.embed_positions is not None:
-            x = embed + self.embed_positions(src_tokens)
+            x = embed + self.embed_positions(src_tokens, dict=self.dictionary)[0]
+
+
         if self.layernorm_embedding is not None:
             x = self.layernorm_embedding(x)
         x = self.dropout_module(x)
         if self.quant_noise is not None:
             x = self.quant_noise(x)
         return x, embed
+    def forward_embedding_no_pos(
+        self, src_tokens, token_embedding: Optional[torch.Tensor] = None
+    ):
+        # embed tokens and positions
+        if token_embedding is None:
+            token_embedding = self.embed_tokens(src_tokens)
+        x = embed = self.embed_scale * token_embedding
+        if self.embed_positions is not None:
+            #logging.info("calling embed from the encoder")
+            x = embed #+ (self.embed_positions(src_tokens, dict=self.dictionary)[0])
 
+
+        if self.layernorm_embedding is not None:
+            x = self.layernorm_embedding(x)
+        x = self.dropout_module(x)
+        if self.quant_noise is not None:
+            x = self.quant_noise(x)
+        return x, embed
     def forward(
         self,
         src_tokens,
@@ -433,8 +455,17 @@ class TransformerEncoder(FairseqEncoder):
                   hidden states of shape `(src_len, batch, embed_dim)`.
                   Only populated if *return_all_hiddens* is True.
         """
-        x, encoder_embedding = self.forward_embedding(src_tokens, token_embeddings)
-
+        #logging.info(src_tokens)
+        #logging.info(self.dictionary.string(src_tokens))
+       # logging.info(self.dictionary.indices)
+        if self.lattice:
+            x, encoder_embedding = self.forward_embedding_no_pos(src_tokens, token_embeddings)
+        #pos_s,pos_e=self.embed_positions(src_tokens, dict=self.dictionary)
+            pos_s,pos_e = utils.make_positions(
+            src_tokens, self.padding_idx,dictionary=self.dictionary
+            )
+        else:
+            x, encoder_embedding = self.forward_embedding(src_tokens, token_embeddings)
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
 
@@ -445,7 +476,12 @@ class TransformerEncoder(FairseqEncoder):
 
         # encoder layers
         for layer in self.layers:
-            x = layer(x, encoder_padding_mask)
+            if self.lattice:
+                x = layer(x, encoder_padding_mask, pos_s=pos_s,pos_e=pos_e)
+
+            else:
+                x = layer(x, encoder_padding_mask)
+
             if return_all_hiddens:
                 assert encoder_states is not None
                 encoder_states.append(x)
@@ -779,7 +815,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         positions = (
             self.embed_positions(
                 prev_output_tokens, incremental_state=incremental_state
-            )
+            )[0]
             if self.embed_positions is not None
             else None
         )
@@ -1071,3 +1107,8 @@ def transformer_wmt_en_de_big_t2t(args):
     args.attention_dropout = getattr(args, "attention_dropout", 0.1)
     args.activation_dropout = getattr(args, "activation_dropout", 0.1)
     transformer_vaswani_wmt_en_de_big(args)
+
+@register_model_architecture("transformer","transformer_base_flat")
+def transformer_base_flat(args):
+    args.attention_type=getattr(args, "attention_type", "relative")
+    base_architecture(args)

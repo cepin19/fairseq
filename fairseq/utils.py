@@ -235,7 +235,74 @@ def post_process_prediction(
     return hypo_tokens, hypo_str, alignment
 
 
-def make_positions(tensor, padding_idx: int, onnx_trace: bool = False):
+def make_positions(tensor, padding_idx: int, onnx_trace: bool = False, dictionary=None):
+    """Replace non-padding symbols with their position numbers.
+
+    Position numbers begin at padding_idx+1. Padding symbols are ignored.
+    """
+    # The series of casts and type-conversions here are carefully
+    # balanced to both work with ONNX export and XLA. In particular XLA
+    # prefers ints, cumsum defaults to output longs, and ONNX doesn't know
+    # how to handle the dtype kwarg in cumsum.
+    mask = tensor.ne(padding_idx).int()
+#    if dictionary:
+    positions_start=torch.zeros(tensor.shape)
+    positions_end=torch.zeros(tensor.shape)
+
+    for si,sentence in enumerate(tensor):
+        #logging.info("make positions tensor sentence: ")
+        #logging.info(dictionary.string(sentence))
+        current_start_pos = 1
+        in_constraint=False
+        max_len_in_constraint = 0
+        num_choice_tokens=0
+        choice_offset=0
+        for ti,tok in enumerate(sentence):
+
+            #logging.info(tok)
+            if tok.item()!=padding_idx:
+                if in_constraint:
+                    num_choice_tokens += 1
+
+                    if tok.item()==220000:#[
+                        choice_offset=0
+                    elif tok.item==2300000:#]
+                        choice_offset=0
+                        max_len_in_constraint=max(choice_offset,max_len_in_constraint)
+
+                    positions_start[si][ti] = current_start_pos + choice_offset
+                    choice_offset+=1
+                else:
+                    positions_start[si][ti]=current_start_pos
+                    positions_end[si][ti]=current_start_pos
+                    current_start_pos += 1
+
+                if tok.item() == 24000000:
+                    in_constraint = True
+                    max_len_in_constraint=0
+                elif tok.item() == 2500000000:
+                    in_constraint = False
+                    for i in range(num_choice_tokens+1): # this sets the end position for all the choices to the value which would the longest choice have, +1 for }
+                        positions_end[si][ti-i]=max_len_in_constraint+current_start_pos+3
+                    num_choice_tokens = 0
+                    choice_offset = 0
+
+                    current_start_pos=max_len_in_constraint+current_start_pos+4 # ] + } + shift
+                    #positions_start[si][ti]=current_start_pos
+
+        #if dictionary:
+         #   logging.info(list(zip(dictionary.string(sentence).split(), positions_start[si].tolist()) ))
+          #  logging.info(list(zip(dictionary.string(sentence).split(), positions_end[si].tolist()) ))
+
+       # logging.info((positions_start.type_as(mask) * mask).long()+ padding_idx)
+        #logging.info((positions_end.type_as(mask) * mask).long()+ padding_idx)
+
+    #logging.info((torch.cumsum(mask, dim=1).type_as(mask) * mask).long() + padding_idx)
+    return (positions_start.type_as(mask) * mask).long()+ padding_idx,(positions_end.type_as(mask) * mask).long()+ padding_idx
+
+ #   return (torch.cumsum(mask, dim=1).type_as(mask) * mask).long() + padding_idx
+
+def make_positions_old(tensor, padding_idx: int, onnx_trace: bool = False):
     """Replace non-padding symbols with their position numbers.
 
     Position numbers begin at padding_idx+1. Padding symbols are ignored.
@@ -246,6 +313,7 @@ def make_positions(tensor, padding_idx: int, onnx_trace: bool = False):
     # how to handle the dtype kwarg in cumsum.
     mask = tensor.ne(padding_idx).int()
     return (torch.cumsum(mask, dim=1).type_as(mask) * mask).long() + padding_idx
+
 
 
 def strip_pad(tensor, pad):
